@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 
-// Default realistic fallback coordinates (San Francisco Downtown / University perimeter)
+// Default realistic fallback coordinates (New Delhi, India)
 const FALLBACK_LOCATION = {
-  lat: 37.7749,
-  lng: -122.4194,
+  lat: 28.6139,
+  lng: 77.2090,
   accuracy: 12,
   isSimulated: true,
-  address: '450 University Ave (Simulated Location)'
+  address: 'New Delhi, India (Simulated Location)'
 };
 
 export function useGeolocation() {

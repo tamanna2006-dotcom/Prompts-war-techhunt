@@ -3,7 +3,6 @@ import Header from './components/Header';
 import OfflineModeBanner from './components/OfflineModeBanner';
 import SafetyAnalyzer from './components/SafetyAnalyzer';
 import RouteBreakdown from './components/RouteBreakdown';
-import InteractiveSafetyMap from './components/InteractiveSafetyMap';
 import HazardReporter from './components/HazardReporter';
 import HazardList from './components/HazardList';
 import EmergencySOS from './components/EmergencySOS';
@@ -16,6 +15,8 @@ import TripShareModal from './components/TripShareModal';
 import VoiceTriggerListener from './components/VoiceTriggerListener';
 import SafetyAuditExporter from './components/SafetyAuditExporter';
 import ToastContainer from './components/Toast';
+import MobileDrawer from './components/MobileDrawer';
+import LeafletMap from './components/LeafletMap';
 
 import { calculateRouteSafety } from './utils/safetyAlgorithm';
 import { 
@@ -39,7 +40,13 @@ import {
   Mic, 
   FileText
 } from 'lucide-react';
+import 'leaflet/dist/leaflet.css';
+import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
+import L from 'leaflet';
+// Removed duplicate useGeolocation import
+// end of imports
 import './App.css';
+
 
 export default function App() {
   // Navigation tabs: 'analyzer' | 'hazards' | 'havens' | 'sos'
@@ -70,7 +77,13 @@ export default function App() {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   // Hooks
-  const { location: userLocation } = useGeolocation();
+  // GPS and map state
+  const { location: userLocation, loading: geoLoading, refreshLocation } = useGeolocation();
+  const [originCoord, setOriginCoord] = useState(null);
+  const [destCoord, setDestCoord] = useState(null);
+  const [routeData, setRouteData] = useState({ coords: [], distance: null, duration: null });
+  const [mapMode, setMapMode] = useState('street'); // 'street' or 'satellite'
+
   const { toasts, addToast, removeToast } = useToast();
 
   // Save changes to storage with sanitization
@@ -102,6 +115,41 @@ export default function App() {
     });
   }, [origin, destination, timeOfDay, mode, hazards, routeVariant]);
 
+  // Fetch OSRM route when both coordinates are set
+  useEffect(() => {
+    if (originCoord && destCoord) {
+      const fetchRoute = async (origin, destination) => {
+        const url = `https://router.project-osrm.org/route/v1/driving/${origin[1]},${origin[0]};${destination[1]},${destination[0]}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Routing request failed');
+        const data = await res.json();
+        const route = data.routes[0];
+        setRouteData({
+          coords: route.geometry.coordinates.map(c => [c[1], c[0]]),
+          distance: (route.distance / 1000).toFixed(2),
+          duration: Math.round(route.duration / 60)
+        });
+      };
+      fetchRoute(originCoord, destCoord).catch(console.error);
+    }
+  }, [originCoord, destCoord]);
+
+  // Reverse geocode GPS position to address
+  const handleUseGPS = () => {
+  // Trigger fresh GPS read; the updated location will be handled by the useEffect below
+  refreshLocation();
+};
+
+  // Component to fit bounds
+  const FitBounds = () => {
+    const map = useMap();
+    if (routeData.coords.length > 0) {
+      const bounds = L.latLngBounds(routeData.coords);
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+    return null;
+  };
+
   // Recalculate Trigger with visual feedback
   const handleRecalculate = useCallback(() => {
     setIsAnalyzing(true);
@@ -110,6 +158,20 @@ export default function App() {
       addToast('Safety risk matrix recomputed with live telemetry.', 'success');
     }, 500);
   }, [addToast]);
+
+  // Update origin coordinates and address when GPS location updates
+  useEffect(() => {
+    if (!userLocation.isSimulated && userLocation.lat && userLocation.lng) {
+      setOriginCoord([userLocation.lat, userLocation.lng]);
+      // Reverse‑geocode to a readable address
+      fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${userLocation.lat}&lon=${userLocation.lng}`)
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.display_name) setOrigin(data.display_name);
+        })
+        .catch(console.error);
+    }
+  }, [userLocation]);
 
   // Load Preset Scenario
   const handleSelectPreset = useCallback((preset) => {
@@ -283,17 +345,64 @@ export default function App() {
               isAnalyzing={isAnalyzing}
             />
 
-            {/* Interactive Vector Safety Map with Multi-Zone Visualization */}
-            <InteractiveSafetyMap
-              routeVariant={routeVariant}
-              hazards={hazards}
-              origin={origin}
-              destination={destination}
-              onSelectHazard={(h) => {
-                setActiveTab('hazards');
-                addToast(`Inspecting hazard: "${h.title}"`, 'warning');
-              }}
-            />
+            {/* Interactive Leaflet Map */}
+          <div className="relative">
+            {/* Tile layer toggle */}
+            <button
+              onClick={() => setMapMode(prev => prev === 'street' ? 'satellite' : 'street')}
+              className="absolute top-2 left-2 z-10 px-3 py-1 bg-slate-800 text-white rounded-md shadow-md"
+            >
+              {mapMode === 'street' ? 'Satellite View' : 'Street View'}
+            </button>
+            {/* GPS button */}
+            <button
+              onClick={handleUseGPS}
+              className="absolute top-2 right-2 z-10 px-3 py-1 bg-cyan-600 text-white rounded-md shadow-md"
+            >
+              Use My Location
+            </button>
+            <MapContainer
+              center={originCoord || [28.6139, 77.2090]}
+              zoom={14}
+              scrollWheelZoom={true}
+              touchZoom={true}
+              doubleClickZoom={true}
+              dragging={true}
+              className="h-[500px] w-full rounded-xl glass-panel"
+            >
+              {mapMode === 'street' ? (
+                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              ) : (
+                <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
+              )}
+              {/* Origin marker */}
+              {originCoord && (
+                <Marker position={originCoord}>
+                  <Popup>{origin}</Popup>
+                </Marker>
+              )}
+              {/* Destination marker */}
+              {destCoord && (
+                <Marker position={destCoord} icon={L.icon({ iconUrl: '/dest.png', iconSize: [25, 41], iconAnchor: [12, 41] })}>
+                  <Popup>{destination}</Popup>
+                </Marker>
+              )}
+              {/* Route polyline */}
+              {routeData.coords.length > 0 && (
+                <Polyline positions={routeData.coords} pathOptions={{ color: '#2563eb', weight: 6, opacity: 0.9 }} />
+              )}
+              {/* Fit bounds */}
+              <FitBounds />
+            </MapContainer>
+            {/* Stats overlay */}
+            {routeData.distance && (
+              <div className="absolute top-4 right-4 z-10 glass-panel p-2 rounded-xl shadow-md">
+                <p className="text-sm">Distance: {routeData.distance} km</p>
+                <p className="text-sm">Time: {routeData.duration} min</p>
+              </div>
+            )}
+          </div>
+
 
             {/* AI Route Recommendation & Detailed Metric Breakdown */}
             <RouteBreakdown
